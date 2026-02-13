@@ -1,11 +1,7 @@
-# Токен бота
-TOKEN = "8251922537:AAECKGpWoWIoszB6XdA5TZsMX3rsgIeA8FM"
 
-# ID администратора
-ADMIN_ID = 5046675535
 
 # Настройки компании
-COMPANY_NAME = "Игора"
+COMPANY_NAME = "GORA"
 EXPORT_PATH = "exports"
 
 # Дни недели
