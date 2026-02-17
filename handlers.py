@@ -7,6 +7,8 @@ import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
+import openpyxl
+
 from config import ADMIN_ID, WEEKDAYS
 from database import Database
 from keyboards import get_main_keyboard, get_remove_keyboard
@@ -485,3 +487,63 @@ async def export_to_excel(message: types.Message, bot: Bot):
     except Exception as e:
         await status.edit_text(f"❌ *Ошибка:* {str(e)[:50]}")
         logger.error(f"Excel export error: {e}")
+
+async def subscribe_notifications(message: types.Message):
+    """🔔 Подписаться на уведомления"""
+    user_id = message.from_user.id
+    db.subscribe_user(user_id)
+    await message.answer(
+        "✅ *Вы подписались на уведомления*\n\n"
+        "📅 Каждую пятницу в 08:00 я буду напоминать о заказе обедов.",
+        parse_mode="Markdown"
+    )
+
+async def unsubscribe_notifications(message: types.Message):
+    """🔕 Отписаться от уведомлений"""
+    user_id = message.from_user.id
+    db.unsubscribe_user(user_id)
+    await message.answer(
+        "❌ *Вы отписались от уведомлений*\n\n"
+        "Если захотите снова получать напоминания, нажмите «🔔 Подписаться».",
+        parse_mode="Markdown"
+    )
+
+async def show_excel_history(message: types.Message):
+    """📚 Показать историю Excel отчётов (все листы)"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("⛔ Доступ запрещён")
+        return
+    
+    import glob
+    import os
+    from config import EXPORT_PATH
+    
+    files = glob.glob(os.path.join(EXPORT_PATH, "заказы_архив_*.xlsx"))
+    
+    if not files:
+        await message.answer("📭 Нет сохранённых отчётов")
+        return
+    
+    files.sort(reverse=True)
+    
+    text = "📚 *Архив Excel отчётов:*\n\n"
+    
+    for i, file in enumerate(files[:10], 1):
+        filename = os.path.basename(file)
+        size = os.path.getsize(file) / 1024
+        
+        # Открываем файл и читаем названия листов
+        try:
+            wb = openpyxl.load_workbook(file, read_only=True)
+            sheets = ", ".join(wb.sheetnames[:3])
+            if len(wb.sheetnames) > 3:
+                sheets += f" и ещё {len(wb.sheetnames) - 3}"
+            wb.close()
+        except:
+            sheets = "не удалось прочитать"
+        
+        text += f"{i}. `{filename}`\n"
+        text += f"   📊 Листы: {sheets}\n"
+        text += f"   📦 {size:.1f} KB\n\n"
+    
+    await message.answer(text, parse_mode="Markdown")

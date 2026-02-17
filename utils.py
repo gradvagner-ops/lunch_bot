@@ -93,33 +93,41 @@ def get_week_range_display(dates):
 # ==================== EXCEL ОТЧЁТЫ ====================
 
 def create_excel_report(all_orders, dates, save_copy=True):
-    """
-    Создаёт Excel файл со всеми заказами
+    """Создаёт Excel файл со всеми заказами.
+       Каждая неделя сохраняется на отдельном листе."""
     
-    Параметры:
-        all_orders: список кортежей (user_id, full_name, instructor_name, date, quantity)
-        dates: список дат недели
-        save_copy: сохранять ли копию
-    
-    Возвращает:
-        (temp_path, saved_path) - пути к файлам
-    """
-    
-    # Создаём папку для экспорта, если её нет
     os.makedirs(EXPORT_PATH, exist_ok=True)
     
-    # Генерируем имя файла
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"заказы_{COMPANY_NAME}_{timestamp}.xlsx"
+    filename = f"заказы_архив_{timestamp}.xlsx"
     temp_path = os.path.join(EXPORT_PATH, f"temp_{filename}")
     saved_path = os.path.join(EXPORT_PATH, filename)
     
-    # Создаём книгу Excel
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Заказы на неделю"
+    # Если файл уже существует - открываем его, иначе создаём новый
+    if os.path.exists(saved_path):
+        wb = openpyxl.load_workbook(saved_path)
+    else:
+        wb = openpyxl.Workbook()
+        # Удаляем дефолтный лист
+        if "Sheet" in wb.sheetnames:
+            wb.remove(wb["Sheet"])
     
-    # Стили для заголовков
+    # Создаём название листа на основе периода
+    week_start = dates[0].strftime("%d.%m")
+    week_end = dates[6].strftime("%d.%m")
+    sheet_name = f"Неделя {week_start}-{week_end}"
+    
+    # Если лист с таким названием уже есть - добавляем суффикс
+    original_name = sheet_name
+    counter = 1
+    while sheet_name in wb.sheetnames:
+        sheet_name = f"{original_name} ({counter})"
+        counter += 1
+    
+    # Создаём новый лист
+    ws = wb.create_sheet(title=sheet_name)
+    
+    # Стили
     header_font = Font(bold=True, color="FFFFFF", size=11)
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
     center_alignment = Alignment(horizontal="center", vertical="center")
@@ -130,41 +138,32 @@ def create_excel_report(all_orders, dates, save_copy=True):
         bottom=Side(style='thin')
     )
     
-    # Стиль для итогов
-    total_font = Font(bold=True, size=11)
-    total_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-    
-    # ===== ШАПКА ОТЧЁТА =====
-    ws.merge_cells('A1:J1')
+    # Заголовок с информацией о периоде
+    ws.merge_cells('A1:I1')
     ws['A1'] = f"Заказы обедов • {COMPANY_NAME}"
     ws['A1'].font = Font(bold=True, size=14)
     ws['A1'].alignment = center_alignment
     
     # Период
-    ws.merge_cells('A2:J2')
+    ws.merge_cells('A2:I2')
     start_date = dates[0].strftime("%d.%m.%Y")
     end_date = dates[6].strftime("%d.%m.%Y")
-    ws['A2'] = f"Период заказа: {start_date} - {end_date}"
+    ws['A2'] = f"Период: {start_date} - {end_date}"
     ws['A2'].font = Font(size=11)
     ws['A2'].alignment = center_alignment
     
-    # Дата создания
-    ws.merge_cells('A3:J3')
+    # Дата создания отчёта
+    ws.merge_cells('A3:I3')
     creation_time = datetime.now().strftime('%d.%m.%Y %H:%M')
     ws['A3'] = f"Отчёт создан: {creation_time}"
     ws['A3'].font = Font(size=11)
     ws['A3'].alignment = center_alignment
     
-    # ===== ЗАГОЛОВКИ ТАБЛИЦЫ =====
-    headers = ["№", "Сотрудник", "Инструктор"]
+    # Заголовки таблицы
+    headers = ["№", "Сотрудник", "Инструктор"] + \
+              [f"{WEEKDAYS[i]}\n{d.strftime('%d.%m')}" for i, d in enumerate(dates)] + \
+              ["Всего"]
     
-    # Добавляем дни недели
-    for i, date in enumerate(dates):
-        headers.append(f"{WEEKDAYS[i]}\n{date.strftime('%d.%m')}")
-    
-    headers.append("Всего")
-    
-    # Применяем заголовки
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=4, column=col)
         cell.value = header
@@ -173,134 +172,99 @@ def create_excel_report(all_orders, dates, save_copy=True):
         cell.alignment = center_alignment
         cell.border = border
     
-    # ===== ГРУППИРУЕМ ЗАКАЗЫ ПО СОТРУДНИКАМ И ИНСТРУКТОРАМ =====
-    orders_by_employee = {}
+    # Группируем заказы по сотрудникам и инструкторам
+    from collections import defaultdict
+    employees = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     
     for order in all_orders:
-        # Распаковываем 5 значений
         if len(order) == 5:
-            user_id, employee_name, instructor_name, date_str, quantity = order
+            user_id, full_name, instructor_name, date, quantity = order
         else:
-            print(f"⚠️ Неправильный формат: {order}")
+            print(f"⚠️ Неправильный формат данных: {order}")
             continue
         
-        # Создаём структуру для хранения
-        if employee_name not in orders_by_employee:
-            orders_by_employee[employee_name] = {}
-        
-        if instructor_name not in orders_by_employee[employee_name]:
-            orders_by_employee[employee_name][instructor_name] = {}
-        
-        # Сохраняем количество по дате
-        orders_by_employee[employee_name][instructor_name][date_str] = quantity
+        employees[full_name][instructor_name][date] = quantity
     
-    # ===== ЗАПОЛНЯЕМ ДАННЫЕ =====
+    # Заполнение данных
     row = 5
-    employee_counter = 1
+    emp_idx = 1
     
-    # Словарь для подсчёта итогов по дням
-    day_totals = {i: 0 for i in range(7)}
-    
-    for employee_name in sorted(orders_by_employee.keys()):
-        instructors = orders_by_employee[employee_name]
+    for employee, instructors in sorted(employees.items()):
         first_row = True
-        
-        for instructor_name in sorted(instructors.keys()):
+        for instructor, orders in sorted(instructors.items()):
             # Номер сотрудника (только для первой строки)
             if first_row:
-                ws.cell(row=row, column=1, value=employee_counter)
+                ws.cell(row=row, column=1, value=emp_idx)
                 first_row = False
             else:
                 ws.cell(row=row, column=1, value="")
             
             # ФИО сотрудника
-            ws.cell(row=row, column=2, value=employee_name).border = border
+            ws.cell(row=row, column=2, value=employee)
             
-            # ФИО инструктора
-            ws.cell(row=row, column=3, value=instructor_name).border = border
+            # Инструктор
+            ws.cell(row=row, column=3, value=instructor)
             
-            # Заполняем дни
-            total_for_instructor = 0
-            col = 4
-            
-            for i, date in enumerate(dates):
+            # Заполняем дни недели
+            total = 0
+            for col, date in enumerate(dates, start=4):
                 date_key = date.strftime("%Y%m%d")
-                quantity = orders_by_employee[employee_name][instructor_name].get(date_key, 0)
-                
-                cell = ws.cell(row=row, column=col, value=quantity if quantity > 0 else "-")
-                cell.alignment = center_alignment
-                cell.border = border
-                
-                if quantity > 0:
-                    total_for_instructor += quantity
-                    day_totals[i] += quantity
-                
-                col += 1
+                qty = orders.get(date_key, 0)
+                ws.cell(row=row, column=col, value=qty if qty > 0 else "-")
+                total += qty
             
-            # Итого по инструктору
-            total_cell = ws.cell(row=row, column=col, value=total_for_instructor)
-            total_cell.alignment = center_alignment
-            total_cell.border = border
-            total_cell.font = Font(bold=True)
+            # Итого по строке
+            ws.cell(row=row, column=11, value=total)
             
             row += 1
+            if first_row:
+                emp_idx += 1
         
-        employee_counter += 1
         # Пустая строка между сотрудниками
         row += 1
     
-    # ===== СТРОКА ИТОГОВ =====
-    total_row = row
+    # Итоговая строка
+    if row > 5:  # Если есть данные
+        total_row = row
+        ws.cell(row=total_row, column=2, value="ИТОГО:")
+        ws.cell(row=total_row, column=2).font = Font(bold=True)
+        
+        # Подсчёт итогов по дням
+        for col in range(4, 11):
+            col_total = 0
+            for r in range(5, total_row):
+                val = ws.cell(row=r, column=col).value
+                if isinstance(val, (int, float)):
+                    col_total += val
+            ws.cell(row=total_row, column=col, value=col_total)
+            ws.cell(row=total_row, column=col).font = Font(bold=True)
+        
+        # Общий итог
+        total_all = 0
+        for r in range(5, total_row):
+            val = ws.cell(row=r, column=11).value
+            if isinstance(val, (int, float)):
+                total_all += val
+        ws.cell(row=total_row, column=11, value=total_all)
+        ws.cell(row=total_row, column=11).font = Font(bold=True)
     
-    # Подпись
-    ws.cell(row=total_row, column=2, value="ИТОГО ПО ДНЯМ:").font = total_font
-    ws.cell(row=total_row, column=2).fill = total_fill
-    ws.cell(row=total_row, column=2).border = border
-    
-    # Итоги по дням
-    col = 4
-    grand_total = 0
-    for i in range(7):
-        cell = ws.cell(row=total_row, column=col, value=day_totals[i])
-        cell.font = total_font
-        cell.fill = total_fill
-        cell.alignment = center_alignment
-        cell.border = border
-        grand_total += day_totals[i]
-        col += 1
-    
-    # Общий итог
-    total_cell = ws.cell(row=total_row, column=col, value=grand_total)
-    total_cell.font = total_font
-    total_cell.fill = total_fill
-    total_cell.alignment = center_alignment
-    total_cell.border = border
-    
-    # ===== АВТОПОДБОР ШИРИНЫ КОЛОНОК =====
+    # Автоширина колонок
     for col in range(1, 12):
-        max_length = 10
-        for r in range(1, total_row + 1):
-            cell_value = ws.cell(row=r, column=col).value
-            if cell_value:
-                max_length = max(max_length, len(str(cell_value)))
-        
-        adjusted_width = min(max_length + 4, 30)
-        ws.column_dimensions[get_column_letter(col)].width = adjusted_width
+        max_len = 10
+        for r in range(1, row + 1):
+            val = ws.cell(row=r, column=col).value
+            if val:
+                max_len = max(max_len, len(str(val)))
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = min(max_len + 2, 25)
     
-    # ===== СОХРАНЕНИЕ =====
-    try:
-        # Сохраняем временный файл
-        wb.save(temp_path)
-        print(f"✅ Excel файл создан: {temp_path}")
-        
-        # Если нужно сохранить копию
-        if save_copy:
-            shutil.copy2(temp_path, saved_path)
-            print(f"📁 Копия сохранена: {saved_path}")
-            return temp_path, saved_path
-        
-        return temp_path, None
-        
-    except Exception as e:
-        print(f"❌ Ошибка при сохранении Excel: {e}")
-        raise
+    # Сохраняем файл
+    wb.save(temp_path)
+    
+    if save_copy:
+        # Копируем в постоянное место
+        import shutil
+        shutil.copy2(temp_path, saved_path)
+        print(f"📁 Excel файл сохранён: {saved_path} с листом '{sheet_name}'")
+        return temp_path, saved_path
+    
+    return temp_path, None

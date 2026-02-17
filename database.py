@@ -126,3 +126,73 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('SELECT COUNT(*) FROM orders WHERE quantity > 0')
             return cursor.fetchone()[0]
+        
+    def init_db(self):
+        """Создаём таблицы, если их нет"""
+        with sqlite3.connect(self.db_file) as conn:
+            cursor = conn.cursor()
+            
+            # Таблица сотрудников
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS employees (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    full_name TEXT,
+                    first_registration DATE
+                )
+            ''')
+            
+            # Таблица заказов
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    instructor_name TEXT,
+                    date TEXT,
+                    quantity INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 👈 НОВАЯ ТАБЛИЦА: подписки на уведомления
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS notifications (
+                    user_id INTEGER PRIMARY KEY,
+                    subscribed BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Индексы
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(date)')
+            conn.commit()
+
+    def subscribe_user(self, user_id):
+        """Подписать пользователя на уведомления"""
+        with sqlite3.connect(self.db_file) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO notifications (user_id, subscribed)
+                VALUES (?, 1)
+            ''', (user_id,))
+            conn.commit()
+
+    def unsubscribe_user(self, user_id):
+        """Отписать пользователя от уведомлений"""
+        with sqlite3.connect(self.db_file) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO notifications (user_id, subscribed)
+                VALUES (?, 0)
+            ''', (user_id,))
+            conn.commit()
+
+    def get_subscribed_users(self):
+        """Получить всех подписанных пользователей"""
+        with sqlite3.connect(self.db_file) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT user_id FROM notifications WHERE subscribed = 1
+            ''')
+            return [row[0] for row in cursor.fetchall()]
