@@ -41,7 +41,7 @@ async def main():
     if ADMIN_ID:
         dp.message.register(export_to_excel, F.text == "📊 Выгрузить Excel")
     
-    print(f"🚀 Бот запущен на aiogram 3.x!")
+    print(f"🚀 Бот запущен")
     print(f"👑 Админ ID: {ADMIN_ID}")
     
     # Запуск polling

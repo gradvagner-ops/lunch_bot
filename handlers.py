@@ -138,6 +138,37 @@ async def process_instructor(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
+async def ask_next_day(message: types.Message, state: FSMContext):
+    """Задаём следующий день с проверкой"""
+    data = await state.get_data()
+    current_day = data.get('current_day', 0)
+    target_dates = data.get('target_dates', [])
+    
+    # ПРОВЕРКА: не вышли ли за границы
+    if current_day >= len(target_dates):
+        await show_summary(message, state)
+        return
+    
+    instructor = data.get('instructor', '')
+    week_range = data.get('week_range', '')
+    
+    date_obj = datetime.strptime(target_dates[current_day], "%Y%m%d")
+    day_name = WEEKDAYS[current_day]
+    date_str = date_obj.strftime("%d.%m.%Y")
+    
+    # Прогресс бар
+    progress = "🟦" * (current_day) + "⬜" * (7 - current_day)
+    
+    text = (
+        f"👤 *Инструктор:* {instructor}\n"
+        f"📅 *Период:* {week_range}\n\n"
+        f"📊 *Прогресс:* {current_day + 1}/7\n{progress}\n\n"
+        f"📅 *День {current_day + 1}: {day_name}* ({date_str})\n\n"
+        f"🍽️ Сколько обедов? (0, 1, 2):"
+    )
+    
+    await message.answer(text, parse_mode="Markdown")
+
 async def process_quantity(message: types.Message, state: FSMContext):
     """⚡ Обработка числа с подробным подтверждением"""
     text = message.text.strip()
@@ -160,7 +191,8 @@ async def process_quantity(message: types.Message, state: FSMContext):
     
     # Сохраняем выбор
     meals = data.get('meals', {})
-    meals[data['date_keys'][current_day]] = quantity
+    date_key = data['date_keys'][current_day]
+    meals[date_key] = quantity
     
     # Показываем подтверждение выбора
     if quantity == 0:
@@ -180,7 +212,7 @@ async def process_quantity(message: types.Message, state: FSMContext):
         await show_summary(message, state)
         return
     
-    # Показываем следующий день
+    # Обновляем состояние и показываем следующий день
     await state.update_data(
         meals=meals,
         current_day=next_day
@@ -209,6 +241,8 @@ async def show_summary(message: types.Message, state: FSMContext):
     instructor = data.get('instructor', '')
     week_range = data.get('week_range', '')
     
+    print(f"📊 show_summary: meals={meals}")  # Отладка
+    
     # Подсчёт итогов
     total = 0
     days_count = 0
@@ -216,6 +250,8 @@ async def show_summary(message: types.Message, state: FSMContext):
     
     for i, day_info in enumerate(week_data):
         qty = meals.get(day_info['key'], 0)
+        print(f"   День {i}: {day_info['key']} = {qty}")  # Отладка
+        
         if qty > 0:
             total += qty
             days_count += 1
@@ -252,110 +288,162 @@ async def show_summary(message: types.Message, state: FSMContext):
     await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
 
 async def confirm_order(callback: types.CallbackQuery, state: FSMContext):
-    """✅ Подтверждение заказа"""
+    """✅ Подтверждение заказа с сохранением в БД"""
     
     if callback.data == "confirm_yes":
+        # Получаем данные из состояния
         data = await state.get_data()
+        user_id = callback.from_user.id
+        instructor = data.get('instructor')
+        meals = data.get('meals', {})
+        week_range = data.get('week_range', '')
         
-        # Пакетное сохранение
-        batch = []
-        for date_key, qty in data.get('meals', {}).items():
-            if qty > 0:
-                batch.append((callback.from_user.id, data['instructor'], date_key, qty))
+        if not meals:
+            await callback.answer("❌ Нет данных для сохранения")
+            return
         
-        if batch:
-            asyncio.create_task(save_batch_async(batch))
+        # Счетчики для статистики
+        saved_count = 0
+        total_meals = 0
+        saved_details = []
         
+        # Сохраняем каждый выбранный день
+        for date_key, quantity in meals.items():
+            if quantity > 0:  # Сохраняем только положительные значения
+                try:
+                    # Вызываем метод сохранения в БД
+                    db.save_order(
+                        user_id=user_id,
+                        instructor_name=instructor,
+                        date=date_key,
+                        quantity=quantity
+                    )
+                    saved_count += 1
+                    total_meals += quantity
+                    
+                    # Форматируем дату для красивого вывода
+                    date_obj = datetime.strptime(date_key, "%Y%m%d")
+                    date_str = date_obj.strftime("%d.%m")
+                    saved_details.append(f"{date_str}: {quantity}")
+                    
+                except Exception as e:
+                    print(f"❌ Ошибка сохранения: {e}")
+        
+        # Очищаем состояние
         await state.clear()
-        cache.clear_cache()
         
-        await callback.message.edit_text(
+        # Очищаем кэш БД (если есть такой метод)
+        try:
+            db.clear_cache()
+        except:
+            pass
+        
+        # Формируем красивое сообщение об успехе
+        success_text = (
             f"✅ *Заказ успешно подтверждён!*\n\n"
-            f"👤 *Инструктор:* {data['instructor']}\n"
-            f"📅 *Период:* {data['week_range']}\n"
-            f"📊 *Всего:* {data['days_count']} дней, {data['total']} обедов\n\n"
-            f"✨ Спасибо! Заказ передан на кухню.",
+            f"👤 *Инструктор:* {instructor}\n"
+            f"📅 *Период:* {week_range}\n"
+            f"📊 *Сохранено дней:* {saved_count}\n"
+            f"🍱 *Всего обедов:* {total_meals}\n\n"
+        )
+        
+        # Добавляем детали если их немного
+        if saved_details and len(saved_details) <= 7:
+            success_text += "*Детали:*\n" + "\n".join([f"  • {d}" for d in saved_details])
+        
+        success_text += f"\n\n✨ Спасибо! Заказ передан администраторам."
+        
+        # Отправляем подтверждение
+        await callback.message.edit_text(
+            success_text,
             parse_mode="Markdown"
         )
+        
+        # Возвращаем в главное меню
+        await callback.message.answer(
+            "👇 *Главное меню:*",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard(callback.from_user.id == ADMIN_ID)
+        )
+        
+        print(f"✅ Заказ сохранен: {instructor}, {saved_count} дней, {total_meals} обедов")
     
     elif callback.data == "confirm_no":
+        # Начать заново
+        data = await state.get_data()
+        instructor = data.get('instructor', '')
+        week_data = data.get('week_data', [])
+        
         await state.update_data(current_day=0, meals={})
         await state.set_state(TextOrderState.waiting_quantity)
         
-        data = await state.get_data()
-        day_info = data['week_data'][0]
-        
-        await callback.message.edit_text(
-            f"🔄 *Начинаем заново*\n\n"
-            f"👤 *Инструктор:* {data['instructor']}\n"
-            f"📅 *Период:* {data['week_range']}\n\n"
-            f"📅 *День 1: {day_info['day_name']}* ({day_info['display']})\n\n"
-            f"🍽️ Сколько обедов? (0, 1, 2):",
-            parse_mode="Markdown"
-        )
+        if week_data:
+            day_info = week_data[0]
+            await callback.message.edit_text(
+                f"🔄 *Начинаем заново*\n\n"
+                f"👤 *Инструктор:* {instructor}\n"
+                f"📅 *День 1: {day_info['day_name']}* ({day_info['display']})\n\n"
+                f"🍽️ Сколько обедов? (0, 1, 2):",
+                parse_mode="Markdown"
+            )
+        else:
+            await start_order(callback.message, state)
     
     else:  # cancel
         await state.clear()
         await callback.message.edit_text(
-            "❌ *Заказ отменён*\n\n"
-            "Если передумаете, начните новый заказ.",
+            "❌ *Заказ отменён*\n\nЕсли передумаете, начните новый заказ.",
             parse_mode="Markdown"
         )
+        await callback.message.answer(
+            "👇 *Главное меню:*",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard(callback.from_user.id == ADMIN_ID)
+        )
     
-    await callback.message.answer(
-        "👇 *Главное меню:*",
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard(callback.from_user.id == ADMIN_ID)
-    )
     await callback.answer()
-
-async def save_batch_async(batch):
-    """Фоновое сохранение"""
-    try:
-        db.save_order_batch(batch)
-    except:
-        pass
 
 # ==================== ПРОСМОТР ЗАКАЗОВ ====================
 
 async def show_my_orders(message: types.Message):
-    """📋 Подробный просмотр заказов"""
+    """📋 Мои заказы"""
     user_id = message.from_user.id
-    orders = db.get_user_orders_cached(user_id)
+    
+    # Используем обычный метод, не cached
+    orders = db.get_user_orders(user_id)  # ← ИЗМЕНЕНО!
     
     if not orders:
         await message.answer(
-            "📭 *У вас пока нет заказов*\n\n"
-            "Нажмите «📝 Новый заказ» чтобы сделать первый заказ.",
+            "📭 *У вас нет заказов*",
             parse_mode="Markdown",
             reply_markup=get_main_keyboard(user_id == ADMIN_ID)
         )
         return
     
-    # Группировка по инструкторам
+    # Группируем по инструкторам
     instructors = {}
-    for name, date, qty in orders:
-        if name not in instructors:
-            instructors[name] = []
-        instructors[name].append((date, qty))
+    for instructor_name, date, quantity in orders:
+        if instructor_name not in instructors:
+            instructors[instructor_name] = []
+        instructors[instructor_name].append((date, quantity))
     
-    text = "📋 *Ваши текущие заказы*\n\n"
+    text = "📋 *Ваши заказы*\n\n"
     total_all = 0
     
     for instructor, items in instructors.items():
         text += f"👤 *{instructor}*\n"
         instructor_total = 0
         
-        for date, qty in sorted(items, reverse=True)[:7]:
-            date_obj = cache.parse_date(date)
+        for date, quantity in sorted(items, reverse=True)[:7]:
+            date_obj = datetime.strptime(date, "%Y%m%d")
             date_str = date_obj.strftime("%a %d.%m")
-            text += f"  • {date_str}: {qty} обед(ов)\n"
-            instructor_total += qty
-            total_all += qty
+            text += f"  • {date_str}: {quantity}\n"
+            instructor_total += quantity
+            total_all += quantity
         
-        text += f"  ✨ Итого по инструктору: {instructor_total} обедов\n\n"
+        text += f"  ✨ Итого: {instructor_total}\n\n"
     
-    text += f"📊 *Всего заказов:* {total_all} обедов"
+    text += f"📊 *Всего:* {total_all} обедов"
     
     await message.answer(
         text,
@@ -366,7 +454,7 @@ async def show_my_orders(message: types.Message):
 # ==================== АДМИНКА ====================
 
 async def export_to_excel(message: types.Message, bot: Bot):
-    """📊 Выгрузка Excel"""
+    """📊 Выгрузить Excel"""
     if message.from_user.id != ADMIN_ID:
         await message.answer("⛔ *Доступ запрещён*\n\nЭта команда только для администратора.")
         return
@@ -374,20 +462,17 @@ async def export_to_excel(message: types.Message, bot: Bot):
     status = await message.answer("🔄 *Формирую отчёт...*\nЭто займёт несколько секунд.")
     
     try:
-        all_orders = db.get_all_orders_cached()
+        # Используем обычный метод, не cached
+        all_orders = db.get_all_orders()  # ← ИЗМЕНЕНО!
+        
         if not all_orders:
             await status.edit_text("📭 *Нет заказов для выгрузки*")
             return
         
         target_dates, _, _ = get_target_week_dates()
         
-        # В отдельном потоке
-        loop = asyncio.get_event_loop()
-        temp_path, saved_path = await loop.run_in_executor(
-            executor, 
-            create_excel_report, 
-            all_orders, target_dates, True
-        )
+        # Создаём Excel отчёт
+        temp_path, saved_path = create_excel_report(all_orders, target_dates, save_copy=True)
         
         await message.answer_document(
             types.FSInputFile(temp_path),
@@ -399,3 +484,4 @@ async def export_to_excel(message: types.Message, bot: Bot):
         
     except Exception as e:
         await status.edit_text(f"❌ *Ошибка:* {str(e)[:50]}")
+        logger.error(f"Excel export error: {e}")
